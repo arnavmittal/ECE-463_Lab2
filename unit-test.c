@@ -47,6 +47,7 @@ int TestInitRT() {
            nbr2 = i;
         }
     }
+
     MyAssert(nbr1!=999,"A Neighbor not found after initializing the routing table");
     MyAssert((resultpkt.route[nbr1].next_hop==1 && resultpkt.route[nbr1].cost==4),"Incorrect next hop or cost to a neighbor after initializing the routing table");
     MyAssert(nbr2!=999,"A Neighbor not found after initializing the routing table");
@@ -68,8 +69,26 @@ int TestNewRoute() {
     updpkt.route[0].dest_id = 4;
     updpkt.route[0].next_hop = 1;
     updpkt.route[0].cost = 5;
+    
     UpdateRoutes(&updpkt, nbrs.nbrcost[0].cost, MyRouterId);
+    
     ConvertTabletoPkt(&resultpkt, MyRouterId);
+    /*printf("INITIAL ROUTING TABLE\n");
+    printf("SEND_ID = %d DEST_ID = %d NUM_ROUTES = %d\n", resultpkt.sender_id,resultpkt.dest_id, resultpkt.no_routes);
+    for(i=0; i<resultpkt.no_routes; i++)
+    {
+        printf("DEST_ID = %d | NEXT_HOP = %d | COST = %d\n", resultpkt.route[i].dest_id, resultpkt.route[i].next_hop, resultpkt.route[i].cost);
+    }
+    printf("\n");
+
+    printf("UPDATE PACKET ROUTING TABLE\n");
+    printf("SEND_ID = %d DEST_ID = %d NUM_ROUTES = %d\n", updpkt.sender_id,updpkt.dest_id, updpkt.no_routes);
+    for(i=0; i<updpkt.no_routes; i++)
+    {
+        printf("DEST_ID = %d | NEXT_HOP = %d | COST = %d\n", updpkt.route[i].dest_id, updpkt.route[i].next_hop, updpkt.route[i].cost);
+    }
+    printf("\n");*/
+
     MyAssert(resultpkt.no_routes==4,"Incorrect number of routes after adding a new destination");
     for(i=0; i<resultpkt.no_routes; i++) {
         if(resultpkt.route[i].dest_id == 4) {   
@@ -185,7 +204,7 @@ int main (int argc, char *argv[])
 
     TestSplitHorizon();
     printf("Test Case 5: PASS Split horizon rule taken care\n");
-
+    
 return 0;
 
 }
