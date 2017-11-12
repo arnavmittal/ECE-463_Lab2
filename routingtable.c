@@ -123,8 +123,21 @@ void ConvertTabletoPkt(struct pkt_RT_UPDATE *UpdatePacketToSend, int myID)
  * USAGE           : This routine prints the routing table to the log file 
  *                   according to the format and rules specified in the Handout.
  */
-//void PrintRoutes (FILE* Logfile, int myID);
+void PrintRoutes (FILE* Logfile, int myID)
+{
+	fprintf(Logfile, "Routing Table:\n");
+	int i;
 
+	fprintf(Logfile, "R%d -> R%d: R%d, %d\n", myID, myID, myID, 0);
+
+	for (i=0; i< NumRoutes; i++)
+	{	
+		if(routingTable[i].dest_id != myID)
+		{
+			fprintf(Logfile, "R%d -> R%d: R%d, %d\n", myID, routingTable[i].dest_id, routingTable[i].next_hop, routingTable[i].cost);
+		}
+	}
+}
 
 
 /* Routine Name    : UninstallRoutesOnNbrDeath
@@ -135,7 +148,17 @@ void ConvertTabletoPkt(struct pkt_RT_UPDATE *UpdatePacketToSend, int myID)
  * USAGE           : This function is invoked when a nbr is found to be dead. The function checks all routes that
  *                   use this nbr as next hop, and changes the cost to INFINITY.
  */
-//void UninstallRoutesOnNbrDeath(int DeadNbr);
+void UninstallRoutesOnNbrDeath(int DeadNbr)
+{
+	int i;
+	for (i=0; i< NumRoutes; i++)
+	{
+		if( DeadNbr == routingTable[i].next_hop)
+		{
+			routingTable[i].cost = INFINITY;
+		}
+	}
+}
 
 
 /* Variable      : struct route_entry routingTable[MAX_ROUTERS]
