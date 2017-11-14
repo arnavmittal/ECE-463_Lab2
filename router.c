@@ -7,6 +7,7 @@
 #include "routingtable.c"
 #include "endian.c"
 #include <sys/select.h>
+#include <sys/timerfd.h>
 
 #define max(a,b)   (((a) > (b)) ? (a) : (b))
 
@@ -160,43 +161,148 @@ int main(int argc, char **argv)
   // Initializing RT_UPDATE
   struct pkt_RT_UPDATE send_update, recv_update;
 
-  // Select timer
+  // Initialize select
+  fd_set rfds;  // Read File Descriptors
+  int update_fd,converge_fd,failure_fd[init_resp.no_nbr];
+  int maxfd = sockfd;
+  int retval;
 
-  /*  Wait for:
-  1) sockfd = UDP fd
-  2) UPDATE_INTERVAL
-  3) FAILURE_DETECTION (3*UPDATE_INTERVAL)
-  4) CONVERGENCE_TIMEOUT
+  // Declare timers
+  struct itimerspec update_timer;
+  struct itimerspec converge_timer;
+  struct itimerspec failure_timer[init_resp.no_nbr];
 
-  */
-  // Variable declaration for select()
-  fd_set  rset;
-  int maxfdp, nready;
+  //Initialize timer intervals and values
+  update_timer.it_value.tv_sec = UPDATE_INTERVAL;
+  update_timer.it_value.tv_nsec = 0;
+  converge_timer.it_value.tv_sec = CONVERGE_TIMEOUT;
+  converge_timer.it_value.tv_nsec = 0;
+
+  update_timer.it_interval.tv_sec = 0;
+  update_timer.it_interval.tv_nsec = 0;
+  converge_timer.it_interval.tv_sec = 0;
+  converge_timer.it_interval.tv_nsec = 0;
   
-  // Initialyze for select()
-  FD_ZERO(&rset);
-  maxfdp1 = max(listenfd, sockfd) + 1;
+  update_fd = timerfd_create(CLOCK_REALTIME, 0); 
+  converge_fd = timerfd_create(CLOCK_REALTIME, 0); 
 
-  while (1) {
+  maxfd = max(converge_fd, maxfd);
+  maxfd = max(update_fd, maxfd);
+  
+  timerfd_settime(update_fd, 0, &update_timer, NULL);
+  timerfd_settime(converge_fd, 0, &converge_timer, NULL);
 
-    FD_SET(listenfd, &rset);
-    FD_SET(sockfd, &rset);
+  int i;
+  for (i=0; i < init_resp.no_nbr; i++)
+  {
+    failure_timer[i].it_value.tv_sec = FAILURE_DETECTION;
+    failure_timer[i].it_value.tv_nsec = 0;
+    failure_timer[i].it_interval.tv_sec = 0;
+    failure_timer[i].it_interval.tv_nsec = 0;
+    failure_fd[i] = timerfd_create(CLOCK_REALTIME, 0);
+    timerfd_settime(failure_fd[i], 0, &failure_timer[i], NULL);
+    maxfd = max(failure_fd[i], maxfd);
+  }
 
-    if((nready = select(maxfdp, &rset, NULL, NULL, NULL)) < 0) 
+  while(1)
+  {
+    // Set rfds = 0
+    FD_ZERO(&rfds);
+    
+    // Add all socket_fds to rfds
+    FD_SET(sockfd, &rfds);
+    FD_SET(update_fd, &rfds);
+    FD_SET(converge_fd, &rfds);
+    for (i=0; i < init_resp.no_nbr; i++)
     {
-      if (errno == EINTR)
+      FD_SET(failure_fd[i], &rfds);
+    }
+
+    retval = select(maxfd+1, &rfds, NULL, NULL, NULL);
+
+    // UDP data received
+    if(FD_ISSET(sockfd, &rfds))
+    {
+      n = recvfrom(sockfd, (struct pkt_RT_UPDATE *) &recv_update, sizeof(recv_update), 0, NULL, NULL);
+      if (n < 0)
       {
-        continue;
+        error("ERROR in recvfrom");
       }
-      else
-      {
-        err_sys("select error");
+      ntoh_pkt_RT_UPDATE(&recv_update);
+      
+      for(i = 0; i < NumRoutes; i++)
+      {  
+        if(routingTable[i].dest_id == recv_update.sender_id)
+        {
+          if(UpdateRoutes(&recv_update, routingTable[i].cost, router_id))
+          {
+            PrintRoutes(Logfile, router_id);
+            
+            // Reset Convergence timer
+            converge_timer.it_value.tv_sec = CONVERGE_TIMEOUT;
+            converge_timer.it_value.tv_nsec = 0;
+            converge_timer.it_interval.tv_sec = 0;
+            converge_timer.it_interval.tv_nsec = 0;
+            timerfd_settime(converge_fd, 0, &converge_timer, NULL);
+          }
+          // Reset Fail timeout for neighbor that just sent me the update
+          failure_timer[i].it_value.tv_sec = FAILURE_DETECTION;
+          failure_timer[i].it_value.tv_nsec = 0;
+          failure_timer[i].it_interval.tv_sec = 0;
+          failure_timer[i].it_interval.tv_nsec = 0;
+          timerfd_settime(failure_fd[i], 0, &failure_timer[i], NULL);
+
+          fflush(Logfile);
+        }
       }
     }
 
-    if (FD_ISSET(listenfd, &rset)) 
+    // UPDATE_TIMEOUT
+    if(FD_ISSET(update_fd, &rfds))
     {
-      printf ("HTTP Recvd\n");
+      // Clear send_update and convert Routing table to a packet
+      memset(&send_update, 0, sizeof(send_update));
+      ConvertTabletoPkt(&send_update, router_id);
+      for (i=0; i < init_resp.no_nbr; i++)
+      {
+        send_update.dest_id = init_resp.nbrcost[i].nbr;
+        hton_pkt_RT_UPDATE(&send_update);
+
+        n = sendto(sockfd, (struct pkt_RT_UPDATE *) &send_update, sizeof(send_update), 0, (struct sockaddr *) &neaddr, sizeof(neaddr));
+        if (n < 0)
+        { 
+          error("ERROR in sendto");
+        }
+        ntoh_pkt_RT_UPDATE(&send_update);
+      }
+
+      update_timer.it_value.tv_sec = UPDATE_INTERVAL;
+      update_timer.it_value.tv_nsec = 0;
+      update_timer.it_interval.tv_sec = 0;
+      update_timer.it_interval.tv_nsec = 0;
+      timerfd_settime(update_fd, 0, &update_timer, NULL);
+      fflush(Logfile);
     }
+
+    // CONVERGENCE_TIMEOUT
+    if(FD_ISSET(converge_fd, &rfds))
+    {
+
+    }
+
+    // NEIGHBOR_FAILURE_TIMEOUT
+    for (i=0; i < init_resp.no_nbr; i++)
+    {
+      if(FD_ISSET(failure_fd[i], &rfds))
+      {
+
+      }
+    }
+  }
+
+
+
+
+
   return 0;
 }
