@@ -167,6 +167,9 @@ int main(int argc, char **argv)
   int maxfd = sockfd;
   int retval;
 
+  //runtime timer
+  int run_timer = 0; //updated every update interval 
+
   // Declare timers
   struct itimerspec update_timer;
   struct itimerspec converge_timer;
@@ -282,11 +285,24 @@ int main(int argc, char **argv)
       update_timer.it_interval.tv_nsec = 0;
       timerfd_settime(update_fd, 0, &update_timer, NULL);
       fflush(Logfile);
+
+      //update runtime
+      run_timer += 1;
     }
 
     // CONVERGENCE_TIMEOUT
     if(FD_ISSET(converge_fd, &rfds))
     {
+      //append converge statement to routing table
+      printf("%d:Converged\n", run_timer);
+      //reset converge timer
+      converge_timer.it_value.tv_sec = CONVERGE_TIMEOUT;
+      converge_timer.it_value.tv_nsec = 0;
+      converge_timer.it_interval.tv_sec = 0;
+      converge_timer.it_interval.tv_nsec = 0;
+      timerfd_settime(converge_fd, 0, &converge_timer, NULL);
+      //fflush yo
+      fflush(Logfile);
 
     }
 
@@ -295,6 +311,33 @@ int main(int argc, char **argv)
     {
       if(FD_ISSET(failure_fd[i], &rfds))
       {
+        //Print Statement
+        printf("Router %d is dead yo!!\n", routingTable[i].dest_id);
+
+        //Change routing table
+        UninstallRoutesOnNbrDeath(routingTable[i].dest_id);
+
+        PrintRoutes(Logfile, router_id);
+
+        //Reset converge timer 
+        converge_timer.it_value.tv_sec = CONVERGE_TIMEOUT;
+        converge_timer.it_value.tv_nsec = 0;
+        converge_timer.it_interval.tv_sec = 0;
+        converge_timer.it_interval.tv_nsec = 0;
+        timerfd_settime(converge_fd, 0, &converge_timer, NULL);
+       
+  
+        //Reset failure timer for neighbor
+        failure_timer[i].it_value.tv_sec = FAILURE_DETECTION;
+        failure_timer[i].it_value.tv_nsec = 0;
+        failure_timer[i].it_interval.tv_sec = 0;
+        failure_timer[i].it_interval.tv_nsec = 0;
+        timerfd_settime(failure_fd[i], 0, &failure_timer[i], NULL);
+
+
+
+        fflush(Logfile);
+
 
       }
     }
@@ -302,7 +345,7 @@ int main(int argc, char **argv)
 
 
 
-
-
+  //close Logfile
+  fclose(Logfile);
   return 0;
 }
