@@ -58,8 +58,6 @@ int main(int argc, char **argv)
   {
     printf("usage: router <router id> <ne_host> <ne_port> <router_port>\n");
   }
-  
-  printf("Init start\n");
 
   // Initialize arguements from the Command Line
   router_id = atoi(argv[1]);
@@ -112,8 +110,6 @@ int main(int argc, char **argv)
 
   //----------------------------------------- Initialization Done --------------------------------------------//
 
-  printf("Init Done\n");
-
   //------------------------------------------ Send INIT_REQUEST ---------------------------------------------// 
   int n;
   struct pkt_INIT_REQUEST init_req;
@@ -127,8 +123,6 @@ int main(int argc, char **argv)
   }
 
   //------------------------------------------ INIT_REQUEST Sent ---------------------------------------------// 
-  
-  printf("Sent Request\n");
 
   //---------------------------------------- Receive INIT_RESPONSE -------------------------------------------// 
   struct pkt_INIT_RESPONSE init_resp;
@@ -139,20 +133,21 @@ int main(int argc, char **argv)
     error("ERROR in recvfrom");
   }
   //--------------------------------------- INIT_RESPONSE Received -------------------------------------------// 
-
-  printf("Received INIT_RESPONSE from %d\n", router_id);
-
+  printf("R%d received INIT_RESPONSE\n",router_id);
   //-------------------------------------- Initialize Routing Table ------------------------------------------//  
   
   ntoh_pkt_INIT_RESPONSE((struct pkt_INIT_RESPONSE *) &init_resp);
   InitRoutingTbl((struct pkt_INIT_RESPONSE *) &init_resp, router_id);
   
+  int nbrdead[init_resp.no_nbr];
+
   FILE* Logfile;
   char * filename;
   filename = concatenate("router", itoa(router_id), ".log");
   
   Logfile = fopen(filename, "w");
   PrintRoutes(Logfile, router_id);
+
   
   //------------------------------------- Routing Table Initialized ------------------------------------------//  
 
@@ -166,6 +161,7 @@ int main(int argc, char **argv)
   int update_fd,converge_fd,failure_fd[init_resp.no_nbr];
   int maxfd = sockfd;
   int retval;
+  int set_convergence = 0;
 
   //runtime timer
   int run_timer = 0; //updated every update interval 
@@ -205,6 +201,7 @@ int main(int argc, char **argv)
     failure_fd[i] = timerfd_create(CLOCK_REALTIME, 0);
     timerfd_settime(failure_fd[i], 0, &failure_timer[i], NULL);
     maxfd = max(failure_fd[i], maxfd);
+    nbrdead[i] = 0;
   }
 
   while(1)
@@ -223,6 +220,23 @@ int main(int argc, char **argv)
 
     retval = select(maxfd+1, &rfds, NULL, NULL, NULL);
 
+    // CONVERGENCE_TIMEOUT
+    if(FD_ISSET(converge_fd, &rfds))
+    {
+      //append converge statement to routing table
+      fprintf(Logfile, "%d:Converged\n", run_timer);
+      set_convergence = 1;
+      converge_timer.it_value.tv_sec = 0;
+      converge_timer.it_value.tv_nsec = 0;
+      converge_timer.it_interval.tv_sec = 0;
+      converge_timer.it_interval.tv_nsec = 0;
+      timerfd_settime(converge_fd, 0, &converge_timer, NULL);
+
+      //fflush yo
+      fflush(Logfile);
+
+    }
+
     // UDP data received
     if(FD_ISSET(sockfd, &rfds))
     {
@@ -232,15 +246,18 @@ int main(int argc, char **argv)
         error("ERROR in recvfrom");
       }
       ntoh_pkt_RT_UPDATE(&recv_update);
-      
-      for(i = 0; i < NumRoutes; i++)
+
+      for(i = 0; i < init_resp.no_nbr; i++)
       {  
-        if(routingTable[i].dest_id == recv_update.sender_id)
+        if(init_resp.nbrcost[i].nbr == recv_update.sender_id)
         {
-          if(UpdateRoutes(&recv_update, routingTable[i].cost, router_id))
+          printf("Receive RT_UPDATE from R%d with cost %d containing %d routes\n", recv_update.sender_id, init_resp.nbrcost[i].cost, recv_update.no_routes);
+          if(UpdateRoutes(&recv_update, init_resp.nbrcost[i].cost, router_id))
           {
+            fprintf(Logfile, "\n");
             PrintRoutes(Logfile, router_id);
-            
+              
+            set_convergence = 0;
             // Reset Convergence timer
             converge_timer.it_value.tv_sec = CONVERGE_TIMEOUT;
             converge_timer.it_value.tv_nsec = 0;
@@ -254,6 +271,7 @@ int main(int argc, char **argv)
           failure_timer[i].it_interval.tv_sec = 0;
           failure_timer[i].it_interval.tv_nsec = 0;
           timerfd_settime(failure_fd[i], 0, &failure_timer[i], NULL);
+          nbrdead[i] = 0;
 
           fflush(Logfile);
         }
@@ -288,22 +306,17 @@ int main(int argc, char **argv)
 
       //update runtime
       run_timer += 1;
-    }
-
-    // CONVERGENCE_TIMEOUT
-    if(FD_ISSET(converge_fd, &rfds))
-    {
-      //append converge statement to routing table
-      printf("%d:Converged\n", run_timer);
-      //reset converge timer
-      converge_timer.it_value.tv_sec = CONVERGE_TIMEOUT;
-      converge_timer.it_value.tv_nsec = 0;
-      converge_timer.it_interval.tv_sec = 0;
-      converge_timer.it_interval.tv_nsec = 0;
-      timerfd_settime(converge_fd, 0, &converge_timer, NULL);
-      //fflush yo
-      fflush(Logfile);
-
+      if(set_convergence)
+      {
+        printf("%d:Converged\n", run_timer);
+      }
+      for (i=0; i < init_resp.no_nbr; i++)
+      {
+        if (nbrdead[i])
+        {
+          printf("Neighbor R%d is dead or link to it is down\n", init_resp.nbrcost[i].nbr);
+        }
+      }
     }
 
     // NEIGHBOR_FAILURE_TIMEOUT
@@ -311,40 +324,37 @@ int main(int argc, char **argv)
     {
       if(FD_ISSET(failure_fd[i], &rfds))
       {
-        //Print Statement
-        printf("Router %d is dead yo!!\n", routingTable[i].dest_id);
+          //Print Statement
+        if(!nbrdead[i])
+        {
+          //Change routing table
+          UninstallRoutesOnNbrDeath(init_resp.nbrcost[i].nbr);
+          fprintf(Logfile, "\n");
+          PrintRoutes(Logfile, router_id);
 
-        //Change routing table
-        UninstallRoutesOnNbrDeath(routingTable[i].dest_id);
+          set_convergence = 0;
 
-        PrintRoutes(Logfile, router_id);
-
-        //Reset converge timer 
-        converge_timer.it_value.tv_sec = CONVERGE_TIMEOUT;
-        converge_timer.it_value.tv_nsec = 0;
-        converge_timer.it_interval.tv_sec = 0;
-        converge_timer.it_interval.tv_nsec = 0;
-        timerfd_settime(converge_fd, 0, &converge_timer, NULL);
-       
-  
-        //Reset failure timer for neighbor
-        failure_timer[i].it_value.tv_sec = FAILURE_DETECTION;
-        failure_timer[i].it_value.tv_nsec = 0;
-        failure_timer[i].it_interval.tv_sec = 0;
-        failure_timer[i].it_interval.tv_nsec = 0;
-        timerfd_settime(failure_fd[i], 0, &failure_timer[i], NULL);
-
-
+          //Reset converge timer 
+          converge_timer.it_value.tv_sec = CONVERGE_TIMEOUT;
+          converge_timer.it_value.tv_nsec = 0;
+          converge_timer.it_interval.tv_sec = 0;
+          converge_timer.it_interval.tv_nsec = 0;
+          timerfd_settime(converge_fd, 0, &converge_timer, NULL);
+         
+    
+          //Reset failure timer for neighbor
+          failure_timer[i].it_value.tv_sec = 0;
+          failure_timer[i].it_value.tv_nsec = 0;
+          failure_timer[i].it_interval.tv_sec = 0;
+          failure_timer[i].it_interval.tv_nsec = 0;
+          timerfd_settime(failure_fd[i], 0, &failure_timer[i], NULL);
+          nbrdead[i] = 1;
+        }
 
         fflush(Logfile);
-
-
       }
     }
   }
-
-
-
   //close Logfile
   fclose(Logfile);
   return 0;

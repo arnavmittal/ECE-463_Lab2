@@ -47,16 +47,17 @@ void InitRoutingTbl (struct pkt_INIT_RESPONSE *InitResponse, int myID)
  */
 int UpdateRoutes(struct pkt_RT_UPDATE *RecvdUpdatePacket, int costToNbr, int myID)
 {
-	int i,j,k, flag = 0;
+	int i,j,k, flag = 0, cost=0;
 	
 	if(myID != RecvdUpdatePacket->dest_id)
 	{
-		return 0;
+		return flag;
 	}
 	
 	for(i = 0; i < RecvdUpdatePacket->no_routes; i++)
 	{
 		k = 0;
+		cost = (((RecvdUpdatePacket->route[i].cost + costToNbr) > INFINITY) ? INFINITY : (RecvdUpdatePacket->route[i].cost + costToNbr));
 		for(j = 0; j < NumRoutes; j++)
 		{
 			if (RecvdUpdatePacket->route[i].dest_id == routingTable[j].dest_id)
@@ -65,14 +66,17 @@ int UpdateRoutes(struct pkt_RT_UPDATE *RecvdUpdatePacket, int costToNbr, int myI
 				// Forced Update
 				if (RecvdUpdatePacket->sender_id == routingTable[j].next_hop)
 				{
-					routingTable[j].cost = RecvdUpdatePacket->route[i].cost + costToNbr;
-					flag = 1;
+					if (routingTable[j].cost != cost)
+					{
+						routingTable[j].cost = cost;
+						flag = 1;
+					}
 				}
 
 				// Split Horizon and Low Cost
-				else if (myID != RecvdUpdatePacket->route[i].next_hop && routingTable[j].cost > RecvdUpdatePacket->route[i].cost + costToNbr)
+				else if (myID != RecvdUpdatePacket->route[i].next_hop && routingTable[j].cost > cost)
 				{
-					routingTable[j].cost = RecvdUpdatePacket->route[i].cost + costToNbr;
+					routingTable[j].cost = cost;
 					routingTable[j].next_hop = RecvdUpdatePacket->sender_id;
 					flag = 1;
 				}
@@ -81,16 +85,15 @@ int UpdateRoutes(struct pkt_RT_UPDATE *RecvdUpdatePacket, int costToNbr, int myI
 		// Update routing table with unknown routes
 		if(k == 0)
 		{
-			//printf("GOT HERE\n\n");
 			routingTable[j].dest_id = RecvdUpdatePacket->route[i].dest_id; 
-			routingTable[j].next_hop = RecvdUpdatePacket->route[i].next_hop;
-			routingTable[j].cost = RecvdUpdatePacket->route[i].cost + costToNbr;
+			routingTable[j].next_hop = RecvdUpdatePacket->sender_id;//RecvdUpdatePacket->route[i].next_hop;
+			routingTable[j].cost = cost;
 			NumRoutes += 1;
+			flag = 1;
 		}
 	}
 	return flag;
 }
-
 
 /* Routine Name    : ConvertTabletoPkt
  * INPUT ARGUMENTS : 1. (struct pkt_RT_UPDATE *) - An empty pkt_RT_UPDATE structure
